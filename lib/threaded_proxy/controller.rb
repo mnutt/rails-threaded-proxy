@@ -1,8 +1,10 @@
+# frozen_string_literal: true
+
 require_relative 'client'
 
 module ThreadedProxy
   module Controller
-    def proxy_fetch(origin_url, options={})
+    def proxy_fetch(origin_url, options = {})
       # hijack the response so we can take it outside of the rack request/response cycle
       request.env['rack.hijack'].call
       socket = request.env['rack.hijack_io']
@@ -17,12 +19,10 @@ module ThreadedProxy
           elsif request.env['CONTENT_LENGTH']
             options[:headers]['content-length'] = request.env['CONTENT_LENGTH'].to_s
           else
-            raise "Cannot proxy a non-chunked POST request without content-length"
+            raise 'Cannot proxy a non-chunked POST request without content-length'
           end
 
-          if request.env['CONTENT_TYPE']
-            options[:headers]['Content-Type'] = request.env['CONTENT_TYPE']
-          end
+          options[:headers]['Content-Type'] = request.env['CONTENT_TYPE'] if request.env['CONTENT_TYPE']
         end
 
         client = Client.new(origin_url, options)

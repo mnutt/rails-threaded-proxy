@@ -1,20 +1,24 @@
+# frozen_string_literal: true
+
 require 'rails-threaded-proxy'
 require 'json'
 
-RSpec.describe ThreadedProxy::Client do
-  BACKEND_PORT = 38293
+BACKEND_STUB_PORT = 38_293
 
+RSpec.describe ThreadedProxy::Client do
   before(:all) do
-    @backend_server = WEBrick::HTTPServer.new(Port: BACKEND_PORT,
-                                              Logger: WEBrick::Log.new("/dev/null"),
+    @backend_server = WEBrick::HTTPServer.new(Port: BACKEND_STUB_PORT,
+                                              Logger: WEBrick::Log.new('/dev/null'),
                                               AccessLog: [])
     @backend_server.mount_proc '/get' do |req, res|
       raise unless req.request_method == 'GET'
+
       res.body = "Received request: #{req.path}"
     end
 
     @backend_server.mount_proc '/post' do |req, res|
       raise unless req.request_method == 'POST'
+
       res.content_type = 'application/json'
       res.body = JSON.generate(path: req.path,
                                headers: req.header,
@@ -29,19 +33,19 @@ RSpec.describe ThreadedProxy::Client do
     @server_thread.kill
   end
 
-  it "proxies a GET request" do
+  it 'proxies a GET request' do
     socket = StringIO.new
 
-    client = ThreadedProxy::Client.new("http://localhost:#{BACKEND_PORT}/get")
+    client = ThreadedProxy::Client.new("http://localhost:#{BACKEND_STUB_PORT}/get")
     client.start(socket)
 
-    expect(socket.string).to include("Received request: /get")
+    expect(socket.string).to include('Received request: /get')
   end
 
-  it "proxies a POST request with content-length" do
+  it 'proxies a POST request with content-length' do
     socket = StringIO.new
 
-    client = ThreadedProxy::Client.new("http://localhost:#{BACKEND_PORT}/post",
+    client = ThreadedProxy::Client.new("http://localhost:#{BACKEND_STUB_PORT}/post",
                                        method: 'post',
                                        body: 'hello world')
     client.start(socket)

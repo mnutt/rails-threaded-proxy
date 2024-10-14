@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'addressable/uri'
 require 'active_support/notifications'
 require 'net/http'
@@ -5,7 +7,7 @@ require_relative 'http'
 
 module ThreadedProxy
   class Client
-    DISALLOWED_RESPONSE_HEADERS = %w[keep-alive]
+    DISALLOWED_RESPONSE_HEADERS = %w[keep-alive].freeze
 
     METHODS = {
       'get' => Net::HTTP::Get,
@@ -15,21 +17,21 @@ module ThreadedProxy
       'head' => Net::HTTP::Head,
       'options' => Net::HTTP::Options,
       'trace' => Net::HTTP::Trace
-    }
+    }.freeze
 
     DEFAULT_OPTIONS = {
       headers: {},
       debug: false,
       method: :get
-    }
+    }.freeze
 
-    def initialize(origin_url, options={})
+    def initialize(origin_url, options = {})
       @origin_url = Addressable::URI.parse(origin_url)
       @options = DEFAULT_OPTIONS.merge(options)
     end
 
     def log(message)
-      $stderr.puts message if @options[:debug]
+      warn message if @options[:debug]
     end
 
     def start(socket)
@@ -40,11 +42,12 @@ module ThreadedProxy
       http_request = request_class.new(@origin_url, request_headers)
       if @options[:body].respond_to?(:read)
         http_request.body_stream = @options[:body]
-      elsif String === @options[:body]
+      elsif @options[:body].is_a?(String)
         http_request.body = @options[:body]
       end
 
-      ActiveSupport::Notifications.instrument('threaded_proxy.fetch', method: request_method, url: @origin_url.to_s, headers: request_headers) do
+      ActiveSupport::Notifications.instrument('threaded_proxy.fetch', method: request_method, url: @origin_url.to_s,
+                                                                      headers: request_headers) do
         http = HTTP.new(@origin_url.host, @origin_url.port || default_port(@origin_url))
         http.use_ssl = (@origin_url.scheme == 'https')
         http.set_debug_output($stderr) if @options[:debug]
@@ -58,7 +61,7 @@ module ThreadedProxy
             yield client_response if block_given?
 
             # start writing response
-            log("Writing response status and headers")
+            log('Writing response status and headers')
             socket.write "HTTP/1.1 #{client_response.code} #{client_response.message}\r\n"
 
             client_response.each_header do |key, value|
@@ -70,11 +73,11 @@ module ThreadedProxy
 
             # There may have been some existing data in client_response's read buffer, flush it out
             # before we manually connect the raw sockets
-            log("Flushing existing response buffer to client")
+            log('Flushing existing response buffer to client')
             http.flush_existing_buffer_to(socket)
 
             # Copy the rest of the client response to the socket
-            log("Copying response body to client")
+            log('Copying response body to client')
             http.copy_to(socket)
           end
         end
@@ -87,8 +90,6 @@ module ThreadedProxy
         80
       when 'https'
         443
-      else
-        nil
       end
     end
   end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'net/http'
 
 module ThreadedProxy
@@ -5,6 +7,7 @@ module ThreadedProxy
     def flush_existing_buffer_to(dest_socket)
       while (data = @socket.send(:rbuf_consume))
         break if data.empty?
+
         dest_socket.write data
       end
 
@@ -27,7 +30,7 @@ module ThreadedProxy
 
     # We read the response ourselves; don't need net/http to try to read it again
     def hijack_response(res)
-      res.instance_variable_set("@read", true)
+      res.instance_variable_set('@read', true)
       res
     end
   end
