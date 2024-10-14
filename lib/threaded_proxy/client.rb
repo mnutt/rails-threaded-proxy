@@ -23,7 +23,7 @@ module ThreadedProxy
 
     def initialize(origin_url, options={})
       @origin_url = Addressable::URI.parse(origin_url)
-      @options = options.merge(DEFAULT_OPTIONS)
+      @options = DEFAULT_OPTIONS.merge(options)
     end
 
     def log(message)
@@ -32,12 +32,11 @@ module ThreadedProxy
 
     def start(socket)
       request_method = METHODS[(@options[:method] || 'GET').to_s.downcase]
-      http_request = request_method.new(@origin_url, (@options[:headers] || {}).merge('Connection' => 'close'))
-      if IO === @options[:body]
+      http_request = request_method.new(@origin_url, @options[:headers].merge('Connection' => 'close'))
+      if @options[:body].respond_to?(:read)
         http_request.body_stream = @options[:body]
       elsif String === @options[:body]
         http_request.body = @options[:body]
-        @options[:headers]['Content-Length'] = @options[:body].bytesize.to_s
       end
 
       http = HTTP.new(@origin_url.host, @origin_url.port || default_port(@origin_url))

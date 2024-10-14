@@ -11,12 +11,17 @@ module ThreadedProxy
         if options[:body] == :rack
           options[:headers] ||= {}
           options[:body] = request.body_stream
+
           if request.env['HTTP_TRANSFER_ENCODING'] == 'chunked'
             options[:headers]['Transfer-Encoding'] = 'chunked'
           elsif request.env['CONTENT_LENGTH']
-            options[:headers]['Content-Length'] = request.env['CONTENT_LENGTH'].to_s
+            options[:headers]['content-length'] = request.env['CONTENT_LENGTH'].to_s
           else
             raise "Cannot proxy a non-chunked POST request without content-length"
+          end
+
+          if request.env['CONTENT_TYPE']
+            options[:headers]['Content-Type'] = request.env['CONTENT_TYPE']
           end
         end
 
