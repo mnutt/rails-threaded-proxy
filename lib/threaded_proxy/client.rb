@@ -1,4 +1,5 @@
 require 'addressable/uri'
+require 'active_support/notifications'
 require 'net/http'
 require_relative 'http'
 
@@ -18,7 +19,8 @@ module ThreadedProxy
 
     DEFAULT_OPTIONS = {
       headers: {},
-      debug: false
+      debug: false,
+      method: :get
     }
 
     def initialize(origin_url, options={})
@@ -31,45 +33,50 @@ module ThreadedProxy
     end
 
     def start(socket)
-      request_method = METHODS[(@options[:method] || 'GET').to_s.downcase]
-      http_request = request_method.new(@origin_url, @options[:headers].merge('Connection' => 'close'))
+      request_method = @options[:method].to_s.downcase
+      request_headers = @options[:headers].merge('Connection' => 'close')
+
+      request_class = METHODS[request_method]
+      http_request = request_class.new(@origin_url, request_headers)
       if @options[:body].respond_to?(:read)
         http_request.body_stream = @options[:body]
       elsif String === @options[:body]
         http_request.body = @options[:body]
       end
 
-      http = HTTP.new(@origin_url.host, @origin_url.port || default_port(@origin_url))
-      http.use_ssl = (@origin_url.scheme == 'https')
-      http.set_debug_output($stderr) if @options[:debug]
-      http.verify_mode = OpenSSL::SSL::VERIFY_NONE if @options[:ignore_ssl_errors]
+      ActiveSupport::Notifications.instrument('threaded_proxy.fetch', method: request_method, url: @origin_url.to_s, headers: request_headers) do
+        http = HTTP.new(@origin_url.host, @origin_url.port || default_port(@origin_url))
+        http.use_ssl = (@origin_url.scheme == 'https')
+        http.set_debug_output($stderr) if @options[:debug]
+        http.verify_mode = OpenSSL::SSL::VERIFY_NONE if @options[:ignore_ssl_errors]
 
-      http.start do
-        http.request(http_request) do |client_response|
-          # We don't support reusing connections once we have disconnected them from rack
-          client_response['connection'] = 'close'
+        http.start do
+          http.request(http_request) do |client_response|
+            # We don't support reusing connections once we have disconnected them from rack
+            client_response['connection'] = 'close'
 
-          yield client_response if block_given?
+            yield client_response if block_given?
 
-          # start writing response
-          log("Writing response status and headers")
-          socket.write "HTTP/1.1 #{client_response.code} #{client_response.message}\r\n"
+            # start writing response
+            log("Writing response status and headers")
+            socket.write "HTTP/1.1 #{client_response.code} #{client_response.message}\r\n"
 
-          client_response.each_header do |key, value|
-            socket.write "#{key}: #{value}\r\n" unless DISALLOWED_RESPONSE_HEADERS.include?(key.downcase)
+            client_response.each_header do |key, value|
+              socket.write "#{key}: #{value}\r\n" unless DISALLOWED_RESPONSE_HEADERS.include?(key.downcase)
+            end
+
+            # Done with headers
+            socket.write "\r\n"
+
+            # There may have been some existing data in client_response's read buffer, flush it out
+            # before we manually connect the raw sockets
+            log("Flushing existing response buffer to client")
+            http.flush_existing_buffer_to(socket)
+
+            # Copy the rest of the client response to the socket
+            log("Copying response body to client")
+            http.copy_to(socket)
           end
-
-          # Done with headers
-          socket.write "\r\n"
-
-          # There may have been some existing data in client_response's read buffer, flush it out
-          # before we manually connect the raw sockets
-          log("Flushing existing response buffer to client")
-          http.flush_existing_buffer_to(socket)
-
-          # Copy the rest of the client response to the socket
-          log("Copying response body to client")
-          http.copy_to(socket)
         end
       end
     end
