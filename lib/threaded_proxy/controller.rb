@@ -4,7 +4,7 @@ require_relative 'client'
 
 module ThreadedProxy
   module Controller
-    def proxy_fetch(origin_url, options = {})
+    def proxy_fetch(origin_url, options = {}, &block)
       # hijack the response so we can take it outside of the rack request/response cycle
       request.env['rack.hijack'].call
       socket = request.env['rack.hijack_io']
@@ -25,7 +25,7 @@ module ThreadedProxy
           options[:headers]['Content-Type'] = request.env['CONTENT_TYPE'] if request.env['CONTENT_TYPE']
         end
 
-        client = Client.new(origin_url, options)
+        client = Client.new(origin_url, options, &block)
         client.start(socket)
       rescue Errno::EPIPE
         # client disconnected before request finished; not an error

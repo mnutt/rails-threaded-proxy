@@ -9,7 +9,7 @@ module ThreadedProxy
   class Client
     DISALLOWED_RESPONSE_HEADERS = %w[keep-alive].freeze
 
-    METHODS = {
+    HTTP_METHODS = {
       'get' => Net::HTTP::Get,
       'post' => Net::HTTP::Post,
       'put' => Net::HTTP::Put,
@@ -18,6 +18,20 @@ module ThreadedProxy
       'options' => Net::HTTP::Options,
       'trace' => Net::HTTP::Trace
     }.freeze
+
+    CALLBACK_METHODS = %i[
+      on_response
+      on_headers
+      on_body
+      on_complete
+      on_error
+    ].freeze
+
+    CALLBACK_METHODS.each do |method_name|
+      define_method(method_name) do |&block|
+        @callbacks[method_name] = block
+      end
+    end
 
     DEFAULT_OPTIONS = {
       headers: {},
@@ -28,6 +42,13 @@ module ThreadedProxy
     def initialize(origin_url, options = {})
       @origin_url = Addressable::URI.parse(origin_url)
       @options = DEFAULT_OPTIONS.merge(options)
+
+      @callbacks = {}
+      CALLBACK_METHODS.each do |method_name|
+        @callbacks[method_name] = proc {}
+      end
+
+      yield(self) if block_given?
     end
 
     def log(message)
@@ -38,7 +59,7 @@ module ThreadedProxy
       request_method = @options[:method].to_s.downcase
       request_headers = @options[:headers].merge('Connection' => 'close')
 
-      request_class = METHODS[request_method]
+      request_class = HTTP_METHODS[request_method]
       http_request = request_class.new(@origin_url, request_headers)
       if @options[:body].respond_to?(:read)
         http_request.body_stream = @options[:body]
@@ -55,21 +76,15 @@ module ThreadedProxy
 
         http.start do
           http.request(http_request) do |client_response|
-            # We don't support reusing connections once we have disconnected them from rack
-            client_response['connection'] = 'close'
+            @callbacks[:on_response].call(client_response, socket)
+            break if socket.closed?
 
-            yield client_response if block_given?
-
-            # start writing response
             log('Writing response status and headers')
-            socket.write "HTTP/1.1 #{client_response.code} #{client_response.message}\r\n"
+            write_headers(client_response, socket)
+            break if socket.closed?
 
-            client_response.each_header do |key, value|
-              socket.write "#{key}: #{value}\r\n" unless DISALLOWED_RESPONSE_HEADERS.include?(key.downcase)
-            end
-
-            # Done with headers
-            socket.write "\r\n"
+            @callbacks[:on_body].call(client_response, socket)
+            break if socket.closed?
 
             # There may have been some existing data in client_response's read buffer, flush it out
             # before we manually connect the raw sockets
@@ -79,9 +94,30 @@ module ThreadedProxy
             # Copy the rest of the client response to the socket
             log('Copying response body to client')
             http.copy_to(socket)
+
+            @callbacks[:on_complete].call(client_response)
           end
+        rescue StandardError => e
+          @callbacks[:on_error].call(e) or raise
         end
       end
+    end
+
+    def write_headers(client_response, socket)
+      socket.write "HTTP/1.1 #{client_response.code} #{client_response.message}\r\n"
+
+      # We don't support reusing connections once we have disconnected them from rack
+      client_response['connection'] = 'close'
+
+      @callbacks[:on_headers].call(client_response, socket)
+      return if socket.closed?
+
+      client_response.each_header do |key, value|
+        socket.write "#{key}: #{value}\r\n" unless DISALLOWED_RESPONSE_HEADERS.include?(key.downcase)
+      end
+
+      # Done with headers
+      socket.write "\r\n"
     end
 
     def default_port(uri)
