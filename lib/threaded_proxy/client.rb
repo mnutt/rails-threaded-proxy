@@ -2,10 +2,15 @@
 
 require 'addressable/uri'
 require 'active_support/notifications'
+require 'action_dispatch'
 require 'net/http'
+
 require_relative 'http'
+require_relative 'socket_responder'
 
 module ThreadedProxy
+  class ResponseBodyAlreadyConsumedError < StandardError; end
+
   class Client
     DISALLOWED_RESPONSE_HEADERS = %w[keep-alive].freeze
 
@@ -22,7 +27,6 @@ module ThreadedProxy
     CALLBACK_METHODS = %i[
       on_response
       on_headers
-      on_body
       on_complete
       on_error
     ].freeze
@@ -42,11 +46,13 @@ module ThreadedProxy
     def initialize(origin_url, options = {})
       @origin_url = Addressable::URI.parse(origin_url)
       @options = DEFAULT_OPTIONS.merge(options)
+      @wrote_headers = false
 
       @callbacks = {}
-      CALLBACK_METHODS.each do |method_name|
+      (CALLBACK_METHODS - [:on_error]).each do |method_name|
         @callbacks[method_name] = proc {}
       end
+      @callbacks[:on_error] = proc { |e| raise e }
 
       yield(self) if block_given?
     end
@@ -67,6 +73,8 @@ module ThreadedProxy
         http_request.body = @options[:body]
       end
 
+      socket_responder = SocketResponder.new(socket)
+
       ActiveSupport::Notifications.instrument('threaded_proxy.fetch', method: request_method, url: @origin_url.to_s,
                                                                       headers: request_headers) do
         http = HTTP.new(@origin_url.host, @origin_url.port || default_port(@origin_url))
@@ -76,15 +84,14 @@ module ThreadedProxy
 
         http.start do
           http.request(http_request) do |client_response|
-            @callbacks[:on_response].call(client_response, socket)
+            @callbacks[:on_response].call(client_response, socket_responder)
             break if socket.closed?
 
             log('Writing response status and headers')
             write_headers(client_response, socket)
             break if socket.closed?
 
-            @callbacks[:on_body].call(client_response, socket)
-            break if socket.closed?
+            raise ResponseBodyAlreadyConsumedError if client_response.read?
 
             # There may have been some existing data in client_response's read buffer, flush it out
             # before we manually connect the raw sockets
@@ -97,9 +104,13 @@ module ThreadedProxy
 
             @callbacks[:on_complete].call(client_response)
           end
-        rescue StandardError => e
-          @callbacks[:on_error].call(e) or raise
         end
+      rescue StandardError => e
+        @callbacks[:on_error].call(e, socket_responder)
+        # Default to 500 if the error callback didn't write a response
+        socket_responder.render(status: 500, text: 'Internal Server Error') unless socket.closed? || @wrote_headers
+
+        socket.close unless socket.closed?
       end
     end
 
@@ -118,6 +129,7 @@ module ThreadedProxy
 
       # Done with headers
       socket.write "\r\n"
+      @wrote_headers = true
     end
 
     def default_port(uri)

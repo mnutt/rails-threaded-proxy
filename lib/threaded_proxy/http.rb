@@ -20,7 +20,14 @@ module ThreadedProxy
 
     def request(*args)
       if block_given?
-        super { |res| yield hijack_response(res) }
+        super do |res|
+          access_read(res)
+          yield(res).tap do
+            # In the block case, the response is hijacked _after_ the block is called
+            # to allow the block to read the response body if it wants
+            hijack_response(res)
+          end
+        end
       else
         hijack_response(super)
       end
@@ -30,8 +37,19 @@ module ThreadedProxy
 
     # We read the response ourselves; don't need net/http to try to read it again
     def hijack_response(res)
-      res.instance_variable_set('@read', true)
+      access_read(res) unless res.respond_to?(:read?)
+      res.read = true
       res
+    end
+
+    def access_read(res)
+      res.singleton_class.class_eval do
+        attr_writer :read
+
+        def read?
+          @read
+        end
+      end
     end
   end
 end
